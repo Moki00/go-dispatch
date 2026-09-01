@@ -61,10 +61,11 @@
 ### Installation
 
 1. **Clone the repository:**
-   ```bash
-   git clone [https://github.com/Moki00/go-dispatch.git](https://github.com/Moki00/go-dispatch.git)
-   cd go-dispatch
-         ```
+```bash
+git clone [https://github.com/Moki00/go-dispatch.git](https://github.com/Moki00/go-dispatch.git)
+cd go-dispatch
+
+```
 
 2. **Create and activate a virtual environment:**
 
@@ -133,4 +134,4 @@ go-dispatch/
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the [LICENSE](https://www.google.com/search?q=LICENSE) file for details.
+This project is licensed under the MIT License - see the [LICENSE](https://github.com/Moki00/go-dispatch/blob/main/LICENSE) file for details.
