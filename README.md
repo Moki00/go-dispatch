@@ -12,12 +12,12 @@
 ```
 
 [Inbound Webhook / Ticket / Ping / SMS]
-│
-▼
+         │
+         ▼
 [Amazon Bedrock AgentCore]
-│
-┌────────┴────────┐
-▼ ▼
+         │
+┌────────┴──────────────────────────┐
+▼                                   ▼
 [Strands Agent Loop] ◄──► [Bedrock Knowledge Bases]
 (Claude 3.5 Sonnet) (Client Runbooks & Topology)
 │
