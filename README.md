@@ -64,8 +64,7 @@
    ```bash
    git clone [https://github.com/Moki00/go-dispatch.git](https://github.com/Moki00/go-dispatch.git)
    cd go-dispatch
-
-````
+         ```
 
 2. **Create and activate a virtual environment:**
 
