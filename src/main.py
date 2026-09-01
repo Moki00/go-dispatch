@@ -1,26 +1,25 @@
 """
 Go-Dispatch: Application Entrypoint & Ingestion API
-Provides FastAPI endpoints for inbound alert webhooks and an interactive
-CLI test harness for local simulation.
+Provides FastAPI endpoints for inbound alert webhooks and an interactive CLI test harness.
 """
 
 import argparse
+from contextlib import asynccontextmanager
 import json
 import logging
 import sys
 from typing import Any, Dict, Optional
 
-import uvicorn
 from fastapi import BackgroundTasks, FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+import uvicorn
 
 from src.agent.core import DispatchOrchestrator
 from src.config import get_settings
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -30,37 +29,36 @@ logger = logging.getLogger("go_dispatch.main")
 settings = get_settings()
 console = Console()
 
-# ---------------------------------------------------------------------------
-# FastAPI Application & Schemas
-# ---------------------------------------------------------------------------
+orchestrator: Optional[DispatchOrchestrator] = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global orchestrator
+    logger.info("Starting up Go-Dispatch service...")
+    orchestrator = DispatchOrchestrator()
+    yield
+    logger.info("Shutting down Go-Dispatch service...")
+
 
 app = FastAPI(
     title="Go-Dispatch API",
     description="Autonomous Zero-Distraction Triage & Mobilization Agent",
     version="1.0.0",
+    lifespan=lifespan,
 )
-
-orchestrator: Optional[DispatchOrchestrator] = None
-
-
-@app.on_event("startup")
-def startup_event():
-    """Initializes the Strands Agent orchestrator on server startup."""
-    global orchestrator
-    logger.info("Starting up Go-Dispatch service...")
-    orchestrator = DispatchOrchestrator()
 
 
 class WebhookPayload(BaseModel):
-    ticket_id: str = Field(..., example="TCK-9402")
-    client_id: str = Field(..., example="CL-882")
-    client_name: str = Field(..., example="Pendergrass Industrial Supplies")
+    ticket_id: str = Field(..., examples=["TCK-9402"])
+    client_id: str = Field(..., examples=["CL-882"])
+    client_name: str = Field(..., examples=["Pendergrass Industrial Supplies"])
     alert_text: str = Field(
         ...,
-        example="CRITICAL: Primary gateway (192.168.10.1) unreachable. 100% packet loss.",
+        examples=["CRITICAL: Primary gateway (192.168.10.1) unreachable. 100% packet loss."],
     )
-    sla_window_minutes: int = Field(default=120, example=60)
-    source: str = Field(default="monitoring_webhook", example="uptime_kuma")
+    sla_window_minutes: int = Field(default=120, examples=[60])
+    source: str = Field(default="monitoring_webhook", examples=["uptime_kuma"])
 
 
 class TriageResponse(BaseModel):
@@ -71,19 +69,15 @@ class TriageResponse(BaseModel):
 
 @app.get("/health", status_code=status.HTTP_200_OK)
 def health_check():
-    """Service health and readiness check."""
     return {"status": "healthy", "service": "go-dispatch", "region": settings.aws_region}
 
 
-@app.post("/api/v1/incidents", response_model=TriageResponse, status_code=status.HTTP_202_ACCEPTED)
-def ingest_incident(payload: WebhookPayload, background_tasks: BackgroundTasks):
-    """Asynchronously ingests and processes an inbound monitoring alert or customer ticket."""
+@app.post("/api/v1/incidents", response_model=TriageResponse, status_code=status.HTTP_200_OK)
+def ingest_incident(payload: WebhookPayload):
     if not orchestrator:
         raise HTTPException(status_code=503, detail="Dispatch orchestrator is initializing.")
 
-    # Process through the Strands Agent loop
     result = orchestrator.process_incident(payload.model_dump())
-
     return TriageResponse(
         status="processed",
         ticket_id=payload.ticket_id,
@@ -92,7 +86,7 @@ def ingest_incident(payload: WebhookPayload, background_tasks: BackgroundTasks):
 
 
 # ---------------------------------------------------------------------------
-# CLI Test Runner & Simulation Harness
+# CLI Test Runner
 # ---------------------------------------------------------------------------
 
 SAMPLE_SCENARIOS = {
@@ -144,7 +138,6 @@ SAMPLE_SCENARIOS = {
 
 
 def run_cli_simulation():
-    """Interactive command-line harness to test Strands triage flows."""
     console.print(
         Panel.fit(
             "[bold green]Go-Dispatch[/bold green] - Autonomous Zero-Distraction Triage\n"
@@ -197,10 +190,6 @@ def run_cli_simulation():
         )
         print("\n" + "=" * 60 + "\n")
 
-
-# ---------------------------------------------------------------------------
-# Execution Router
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Go-Dispatch Service & Test Harness")

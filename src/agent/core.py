@@ -48,23 +48,18 @@ Operate decisively. Provide compact, structured reasoning steps before tool invo
 
 
 def create_dispatch_agent() -> Agent:
-    """Initializes and returns the Strands Agent configured with Amazon Bedrock
-
-    and Go-Dispatch tools.
-    """
+    """Initializes and returns the Strands Agent configured with Amazon Bedrock and Go-Dispatch tools."""
     logger.info(
         f"Initializing Strands Agent with Bedrock model: {settings.bedrock_model_id} (Region: {settings.aws_region})"
     )
 
-    # Configure Amazon Bedrock backend
     llm_backend = BedrockModel(
         model_id=settings.bedrock_model_id,
         region_name=settings.aws_region,
-        temperature=0.1,  # Low temperature for deterministic operational decisions
+        temperature=0.1,
         max_tokens=2048,
     )
 
-    # Register the agent tools
     agent_tools = [
         query_client_runbook,
         execute_ping_diagnostic,
@@ -72,21 +67,15 @@ def create_dispatch_agent() -> Agent:
         escalate_to_technician,
     ]
 
-    # Instantiate Strands Agent
-    agent = Agent(
+    return Agent(
         model=llm_backend,
         system_prompt=SYSTEM_PROMPT,
         tools=agent_tools,
     )
 
-    return agent
-
 
 class DispatchOrchestrator:
-    """Manages event ingestion and passes structured operational telemetry
-
-    into the Strands agent loop.
-    """
+    """Manages event ingestion and passes structured operational telemetry into the Strands agent loop."""
 
     def __init__(self):
         self.agent = create_dispatch_agent()
@@ -112,5 +101,6 @@ class DispatchOrchestrator:
         )
 
         logger.info(f"Triggering Go-Dispatch Agent for Ticket {ticket_id}...")
-        response = self.agent.run(prompt)
+        # Direct call syntax for Strands Agent
+        response = self.agent(prompt)
         return str(response)
