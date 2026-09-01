@@ -1,8 +1,3 @@
-### Full Repository README.md Template
-
-After initialization, you can replace the initial `README.md` with this structure:
-
-```markdown
 # Go-Dispatch 🚀
 
 ### Automated Zero-Distraction Triage & Mobilization Agent
