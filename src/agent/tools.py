@@ -4,8 +4,12 @@ Defines tools for autonomous background triage, Bedrock KB retrieval,
 diagnostic verifications, ticket updates, and immediate human dispatch via SNS.
 """
 
+import ipaddress
 import json
 import logging
+import re
+import subprocess
+import sys
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -64,25 +68,141 @@ def query_client_runbook(client_id: str, query: str) -> str:
         return f"Error retrieving KB context: {str(e)}"
 
 
-@tool
-def execute_ping_diagnostic(target_ip: str, count: int = 3) -> str:
-    """Performs an automated ping verification check against an edge router, server, or gateway
+def _is_valid_target(target: str) -> bool:
+    """Validates that target is a valid IP address or hostname to prevent command injection."""
+    try:
+        ipaddress.ip_address(target)
+        return True
+    except ValueError:
+        return bool(re.match(r"^[a-zA-Z0-9.-]+$", target) and len(target) <= 255)
 
-    to verify if an outage is a transient ping flap or an active hard down failure.
+
+@tool
+def execute_ping_diagnostic(target_ip: str, count: int = 3, timeout_ms: int = 1000) -> str:
+    """Performs an automated network ICMP ping verification check against an edge router,
+    server, or gateway to verify if an outage is a transient ping flap or an active hard down failure.
+    Returns structured diagnostic telemetry with packet loss percentage, round-trip times, and verdict.
     """
     logger.info(f"Running automated ping diagnostic against {target_ip} ({count} probes)...")
-    # In production, this can invoke an ICMP probe or AWS Network Monitor API
-    # Simulated check logic:
-    return json.dumps(
-        {
+
+    if not _is_valid_target(target_ip):
+        return json.dumps({
+            "target": target_ip,
+            "error": "Invalid target format. Must be a valid IPv4/IPv6 address or hostname.",
+            "status": "ERROR",
+            "packet_loss_pct": 100.0,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "diagnostic_verdict": "Diagnostic aborted: security validation failed for target syntax.",
+        })
+
+    is_win = sys.platform.startswith("win")
+    timeout_sec = max(1, timeout_ms // 1000)
+
+    if is_win:
+        cmd = ["ping", "-n", str(count), "-w", str(timeout_ms), target_ip]
+    else:
+        cmd = ["ping", "-c", str(count), "-W", str(timeout_sec), target_ip]
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=(count * (timeout_ms / 1000) + 5),
+        )
+        raw_output = proc.stdout + proc.stderr
+        returncode = proc.returncode
+    except subprocess.TimeoutExpired:
+        return json.dumps({
             "target": target_ip,
             "probes_sent": count,
+            "probes_received": 0,
             "packet_loss_pct": 100.0,
+            "avg_rtt_ms": None,
             "status": "UNREACHABLE",
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "diagnostic_verdict": "Confirmed hardware interface failure or upstream ISP link drop.",
-        }
-    )
+            "diagnostic_verdict": "Probes timed out completely. Confirmed hard down failure.",
+        })
+    except Exception as e:
+        logger.error(f"Error executing ping process: {e}")
+        return json.dumps({
+            "target": target_ip,
+            "error": str(e),
+            "status": "ERROR",
+            "packet_loss_pct": 100.0,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "diagnostic_verdict": f"Failed to execute ping diagnostic: {e}",
+        })
+
+    # Parse packet loss percentage
+    loss_match = re.search(r"\((\d+)%\s*loss\)", raw_output, re.IGNORECASE)  # Windows
+    if not loss_match:
+        loss_match = re.search(r"(\d+)%\s*packet loss", raw_output, re.IGNORECASE)  # Linux
+
+    if loss_match:
+        packet_loss_pct = float(loss_match.group(1))
+    else:
+        packet_loss_pct = 0.0 if returncode == 0 else 100.0
+
+    # Parse sent / received counts
+    sent = count
+    received = 0
+    counts_match = re.search(r"Sent\s*=\s*(\d+),\s*Received\s*=\s*(\d+)", raw_output, re.IGNORECASE)  # Windows
+    if counts_match:
+        sent = int(counts_match.group(1))
+        received = int(counts_match.group(2))
+    else:
+        linux_counts = re.search(
+            r"(\d+)\s*packets transmitted,\s*(\d+)\s*(?:packets\s*)?received",
+            raw_output,
+            re.IGNORECASE,
+        )
+        if linux_counts:
+            sent = int(linux_counts.group(1))
+            received = int(linux_counts.group(2))
+        else:
+            received = int(sent * (1.0 - (packet_loss_pct / 100.0)))
+
+    # Parse average latency
+    avg_rtt = None
+    win_avg = re.search(r"Average\s*=\s*(\d+)ms", raw_output, re.IGNORECASE)
+    if win_avg:
+        avg_rtt = float(win_avg.group(1))
+    else:
+        linux_rtt = re.search(r"rtt min/avg/max/mdev\s*=\s*[\d.]+/([\d.]+)/", raw_output, re.IGNORECASE)
+        if linux_rtt:
+            avg_rtt = float(linux_rtt.group(1))
+
+    # Evaluate connectivity status & operational verdict
+    if packet_loss_pct == 0.0 and received > 0:
+        status = "REACHABLE"
+        verdict = (
+            f"Host is fully reachable (0% packet loss, avg latency {avg_rtt or 0}ms). "
+            "Transient alarm appears self-healed or false positive; no physical dispatch required."
+        )
+    elif 0.0 < packet_loss_pct < 100.0:
+        status = "DEGRADED"
+        verdict = (
+            f"Intermittent connectivity detected ({packet_loss_pct}% packet loss). "
+            "Link is flapping or heavily congested; active monitoring recommended."
+        )
+    else:
+        status = "UNREACHABLE"
+        verdict = (
+            "Confirmed hard down failure (100% packet loss). "
+            "Target is completely unresponsive; physical interface failure, power outage, or ISP drop."
+        )
+
+    return json.dumps({
+        "target": target_ip,
+        "probes_sent": sent,
+        "probes_received": received,
+        "packet_loss_pct": packet_loss_pct,
+        "avg_rtt_ms": avg_rtt,
+        "status": status,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "diagnostic_verdict": verdict,
+    })
 
 
 @tool

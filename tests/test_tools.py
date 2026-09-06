@@ -63,17 +63,59 @@ def test_query_client_runbook_handles_client_error():
 # 2. Tests for execute_ping_diagnostic
 # ===========================================================================
 
-def test_execute_ping_diagnostic_current_simulation():
-    """Verifies that the current simulated diagnostic returns valid JSON with target and packet loss."""
-    result_raw = execute_ping_diagnostic("192.168.10.1", count=4)
+def test_execute_ping_diagnostic_localhost_reachable():
+    """Verifies that execute_ping_diagnostic successfully pings localhost (127.0.0.1) and detects REACHABLE status."""
+    result_raw = execute_ping_diagnostic("127.0.0.1", count=2, timeout_ms=1000)
     data = json.loads(result_raw)
 
-    assert data["target"] == "192.168.10.1"
-    assert data["probes_sent"] == 4
+    assert data["target"] == "127.0.0.1"
+    assert data["probes_sent"] == 2
+    assert data["probes_received"] >= 1
+    assert data["packet_loss_pct"] == 0.0
+    assert data["status"] == "REACHABLE"
+    assert "0% packet loss" in data["diagnostic_verdict"]
+
+
+def test_execute_ping_diagnostic_unreachable_target():
+    """Verifies that execute_ping_diagnostic detects UNREACHABLE on non-routable TEST-NET-1 (192.0.2.1)."""
+    result_raw = execute_ping_diagnostic("192.0.2.1", count=1, timeout_ms=500)
+    data = json.loads(result_raw)
+
+    assert data["target"] == "192.0.2.1"
+    assert data["probes_sent"] == 1
     assert data["packet_loss_pct"] == 100.0
     assert data["status"] == "UNREACHABLE"
-    assert "diagnostic_verdict" in data
-    assert "timestamp" in data
+    assert "Confirmed hard down failure" in data["diagnostic_verdict"]
+
+
+def test_execute_ping_diagnostic_security_rejection():
+    """Verifies that command injection or malicious target strings are rejected without running shell commands."""
+    result_raw = execute_ping_diagnostic("127.0.0.1; whoami", count=1)
+    data = json.loads(result_raw)
+
+    assert data["status"] == "ERROR"
+    assert "Invalid target format" in data["error"]
+    assert data["packet_loss_pct"] == 100.0
+
+
+def test_execute_ping_diagnostic_mocked_degraded_state():
+    """Verifies that intermittent packet loss correctly sets status to DEGRADED."""
+    mock_stdout = (
+        "Ping statistics for 192.168.1.1:\n"
+        "    Packets: Sent = 4, Received = 2, Lost = 2 (50% loss),\n"
+        "Approximate round trip times in milli-seconds:\n"
+        "    Minimum = 12ms, Maximum = 45ms, Average = 28ms\n"
+    )
+    mock_proc = MagicMock(stdout=mock_stdout, stderr="", returncode=0)
+
+    with patch("subprocess.run", return_value=mock_proc):
+        result_raw = execute_ping_diagnostic("192.168.1.1", count=4)
+        data = json.loads(result_raw)
+
+        assert data["status"] == "DEGRADED"
+        assert data["packet_loss_pct"] == 50.0
+        assert data["avg_rtt_ms"] == 28.0
+        assert "Intermittent connectivity detected" in data["diagnostic_verdict"]
 
 
 # ===========================================================================
@@ -153,11 +195,6 @@ def test_escalate_to_technician_publishes_to_sns():
 # ===========================================================================
 # 5. Placeholder Tests for Future Enhancements (Flexible & Skipped)
 # ===========================================================================
-
-@pytest.mark.skip(reason="Yet to be implemented: Real network ICMP/socket ping diagnostic with live probe verification")
-def test_real_icmp_ping_diagnostic():
-    """Future verification for real ICMP socket checks distinguishing online vs offline hosts."""
-    pass
 
 
 @pytest.mark.skip(reason="Yet to be implemented: Modular KBRetriever class in src/knowledge/kb_retriever.py")
