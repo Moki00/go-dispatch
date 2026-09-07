@@ -1,0 +1,26 @@
+go-dispatch/
+├── src/
+│   ├── agent/
+│   │   ├── __init__.py
+│   │   ├── core.py
+│   │   └── tools.py
+│   ├── db/
+│   │   ├── __init__.py
+│   │   └── dynamodb.py
+│   ├── knowledge/
+│   │   ├── __init__.py
+│   │   └── kb_retriever.py
+│   ├── __init__.py
+│   ├── config.py
+│   └── main.py
+├── tests/
+│   ├── __init__.py
+│   ├── test_agent_flow.py
+│   └── test_tools.py
+├── .env.example
+├── .gitignore
+├── LICENSE
+├── README.md
+├── requirements.txt
+├── structure.py
+└── structure.txt

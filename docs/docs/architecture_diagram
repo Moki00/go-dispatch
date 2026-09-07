@@ -1,0 +1,34 @@
+digraph "Go-Dispatch - Autonomous Zero-Distraction Triage Architecture" {
+	graph [bgcolor=white fontcolor="#2D3436" fontname="Sans-Serif" fontsize=16 label="Go-Dispatch - Autonomous Zero-Distraction Triage Architecture" nodesep=0.60 pad=0.5 rankdir=LR ranksep=0.75 splines=ortho]
+	node [fixedsize=true fontcolor="#2D3436" fontname="Sans-Serif" fontsize=13 height=1.4 imagescale=true labelloc=b shape=box style=rounded width=1.4]
+	edge [color="#7B8894"]
+	c40f8217c2d64d469419c2d9d802f4fb [label="Inbound Telemetry
+(SNMP / Webhooks / SMS)" height=2.3 image="C:\Users\mokiw\AppData\Roaming\Python\Python314\site-packages\resources/onprem/client\users.png" shape=none]
+	subgraph "cluster_AWS Cloud Environment" {
+		graph [bgcolor="#E5F5FD" fontname="Sans-Serif" fontsize=12 label="AWS Cloud Environment" labeljust=l pencolor="#AEB6BE" rankdir=LR shape=box style=rounded]
+		"5023d1d54d4f443e847adfa8b9c7a27e" [label="Ingestion API
+(FastAPI / ECS / Lambda)" height=2.3 image="C:\Users\mokiw\AppData\Roaming\Python\Python314\site-packages\resources/programming/framework\fastapi.png" shape=none]
+		subgraph "cluster_Amazon Bedrock AgentCore Runtime" {
+			graph [bgcolor="#EBF3E7" fontname="Sans-Serif" fontsize=12 label="Amazon Bedrock AgentCore Runtime" labeljust=l pencolor="#AEB6BE" rankdir=LR shape=box style=rounded]
+			e4836c4bbb2d4f6096c737a70a1e9ddc [label="Strands Agent Loop
+(Claude 3.5 Sonnet)" height=2.3 image="C:\Users\mokiw\AppData\Roaming\Python\Python314\site-packages\resources/aws/ml\bedrock.png" shape=none]
+		}
+		subgraph "cluster_Data & Knowledge Tier" {
+			graph [bgcolor="#EBF3E7" fontname="Sans-Serif" fontsize=12 label="Data & Knowledge Tier" labeljust=l pencolor="#AEB6BE" rankdir=LR shape=box style=rounded]
+			"4bbbaf79dcf247fc951a2127c65046f8" [label="Bedrock Knowledge Base
+(Client Runbooks & Topology)" height=2.3 image="C:\Users\mokiw\AppData\Roaming\Python\Python314\site-packages\resources/aws/ml\bedrock.png" shape=none]
+			bf20d858ba90499794123e17c37d7e8b [label="DynamoDB
+(Ticket & SLA State)" height=2.3 image="C:\Users\mokiw\AppData\Roaming\Python\Python314\site-packages\resources/aws/database\dynamodb.png" shape=none]
+		}
+		"60bfa54c864648ea90f0dc3b1f588675" [label="Amazon SNS
+(Critical SMS & Push Dispatch)" height=2.3 image="C:\Users\mokiw\AppData\Roaming\Python\Python314\site-packages\resources/aws/integration\simple-notification-service-sns.png" shape=none]
+	}
+	"2fb4881a113b4662bcd1220419473dcb" [label="Field Technician
+(Mobile Mobilization)" height=2.3 image="C:\Users\mokiw\AppData\Roaming\Python\Python314\site-packages\resources/onprem/client\users.png" shape=none]
+	c40f8217c2d64d469419c2d9d802f4fb -> "5023d1d54d4f443e847adfa8b9c7a27e" [label="Event Payload" dir=forward fontcolor="#2D3436" fontname="Sans-Serif" fontsize=13]
+	"5023d1d54d4f443e847adfa8b9c7a27e" -> e4836c4bbb2d4f6096c737a70a1e9ddc [label="Invoke Orchestrator" dir=forward fontcolor="#2D3436" fontname="Sans-Serif" fontsize=13]
+	e4836c4bbb2d4f6096c737a70a1e9ddc -> "4bbbaf79dcf247fc951a2127c65046f8" [label="Query Topology / SLA" dir=forward fontcolor="#2D3436" fontname="Sans-Serif" fontsize=13]
+	e4836c4bbb2d4f6096c737a70a1e9ddc -> bf20d858ba90499794123e17c37d7e8b [label="Update Ticket (Quiet Mode)" dir=forward fontcolor="#2D3436" fontname="Sans-Serif" fontsize=13]
+	e4836c4bbb2d4f6096c737a70a1e9ddc -> "60bfa54c864648ea90f0dc3b1f588675" [label="Tier 4 Outage Alert" color=firebrick dir=forward fontcolor="#2D3436" fontname="Sans-Serif" fontsize=13 style=bold]
+	"60bfa54c864648ea90f0dc3b1f588675" -> "2fb4881a113b4662bcd1220419473dcb" [label="Instant Dossier" color=firebrick dir=forward fontcolor="#2D3436" fontname="Sans-Serif" fontsize=13 style=bold]
+}
