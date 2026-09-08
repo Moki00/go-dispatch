@@ -221,3 +221,7 @@ __marimo__/
 .venv/
 venv/
 .env
+
+# Local tooling & editor settings (kept local)
+.claude/
+.vscode/

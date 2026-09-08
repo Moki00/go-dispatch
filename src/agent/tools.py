@@ -18,6 +18,8 @@ from botocore.exceptions import ClientError
 from strands import tool
 
 from src.config import get_settings
+from src.db.dynamodb import TicketRepository
+from src.knowledge.kb_retriever import KBRetriever
 
 logger = logging.getLogger("go_dispatch.tools")
 settings = get_settings()
@@ -42,30 +44,8 @@ def query_client_runbook(client_id: str, query: str) -> str:
     gateway IP schema, router models, SLA tiers, and standard troubleshooting
     runbooks.
     """
-    if not settings.bedrock_kb_id:
-        return (
-            f"[MOCK KB] Client: {client_id} | Query: {query} | "
-            "SLA: Gold (2hr response, 4hr onsite) | Primary Gateway: 192.168.10.1 | "
-            "Edge Device: UniFi Dream Machine Pro | Spare Switch: USW-24-PoE in Server Closet."
-        )
-
-    try:
-        response = bedrock_agent_runtime.retrieve(
-            knowledgeBaseId=settings.bedrock_kb_id,
-            retrievalQuery={"text": f"Client ID {client_id}: {query}"},
-            retrievalConfiguration={
-                "vectorSearchConfiguration": {"numberOfResults": 3}
-            },
-        )
-        results = [
-            doc["content"]["text"] for doc in response.get("retrievalResults", [])
-        ]
-        if not results:
-            return f"No runbook documentation found for client {client_id}."
-        return "\n---\n".join(results)
-    except ClientError as e:
-        logger.error(f"Error querying Bedrock KB: {e}")
-        return f"Error retrieving KB context: {str(e)}"
+    retriever = KBRetriever(client=bedrock_agent_runtime, kb_id=settings.bedrock_kb_id)
+    return retriever.retrieve(client_id, query)
 
 
 def _is_valid_target(target: str) -> bool:
@@ -216,35 +196,8 @@ def log_ticket_action(
 
     Use this for Tier 1 auto-resolutions and Tier 2 async draft queueing.
     """
-    try:
-        table = dynamodb.Table(settings.dynamodb_tickets_table)
-        update_data = {
-            "last_action": action_summary,
-            "status": new_status,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "internal_notes": internal_notes or "Action processed by Go-Dispatch Agent.",
-        }
-
-        table.update_item(
-            Key={"ticket_id": ticket_id},
-            UpdateExpression="SET #s = :status, #la = :la, #ua = :ua, #in = :in",
-            ExpressionAttributeNames={
-                "#s": "status",
-                "#la": "last_action",
-                "#ua": "updated_at",
-                "#in": "internal_notes",
-            },
-            ExpressionAttributeValues={
-                ":status": new_status,
-                ":la": action_summary,
-                ":ua": update_data["updated_at"],
-                ":in": update_data["internal_notes"],
-            },
-        )
-        return f"Ticket {ticket_id} updated successfully. Status: {new_status}."
-    except Exception as e:
-        logger.warning(f"DynamoDB update skipped or failed: {e}")
-        return f"Action logged locally (Ticket {ticket_id}): {action_summary} [Status: {new_status}]"
+    repo = TicketRepository(resource=dynamodb)
+    return repo.update_action(ticket_id, action_summary, new_status, internal_notes)
 
 
 # ---------------------------------------------------------------------------
