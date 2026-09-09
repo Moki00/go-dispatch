@@ -15,6 +15,8 @@ from src.agent.tools import (
     log_ticket_action,
     query_client_runbook,
 )
+from src.db.dynamodb import Client, ClientRepository, Ticket, TicketRepository
+from src.knowledge.kb_retriever import KBRetriever
 
 
 # ===========================================================================
@@ -193,17 +195,172 @@ def test_escalate_to_technician_publishes_to_sns():
 
 
 # ===========================================================================
-# 5. Placeholder Tests for Future Enhancements (Flexible & Skipped)
+# 5. Tests for Modular KBRetriever (src/knowledge/kb_retriever.py)
 # ===========================================================================
 
+def test_kb_retriever_mock_when_unconfigured():
+    """Verifies KBRetriever returns deterministic mock topology when no KB is configured."""
+    retriever = KBRetriever(kb_id="")
+    assert retriever.is_live is False
+    result = retriever.retrieve("CL-777", "gateway topology")
+    assert "[MOCK KB]" in result
+    assert "CL-777" in result
+    assert "Primary Gateway: 192.168.10.1" in result
 
-@pytest.mark.skip(reason="Yet to be implemented: Modular KBRetriever class in src/knowledge/kb_retriever.py")
-def test_modular_kb_retriever_module():
-    """Future verification for dedicated knowledge base retrieval helper."""
-    pass
+
+def test_kb_retriever_live_retrieve_flattens_passages():
+    """Verifies KBRetriever calls Bedrock and joins retrieved passages when a KB ID is present."""
+    mock_client = MagicMock()
+    mock_client.retrieve.return_value = {
+        "retrievalResults": [
+            {"content": {"text": "Passage A: verify rack power."}},
+            {"content": {"text": "Passage B: check SFP+ optical link."}},
+        ]
+    }
+    retriever = KBRetriever(client=mock_client, kb_id="kb-abc-123")
+    assert retriever.is_live is True
+
+    result = retriever.retrieve("CL-001", "power lights")
+    mock_client.retrieve.assert_called_once()
+    assert "Passage A" in result
+    assert "Passage B" in result
+    assert "---" in result
 
 
-@pytest.mark.skip(reason="Yet to be implemented: Structured Ticket and Client repository models in src/db/dynamodb.py")
-def test_dynamodb_repository_layer():
-    """Future verification for high-level repository CRUD operations."""
-    pass
+def test_kb_retriever_empty_results_message():
+    """Verifies KBRetriever reports a not-found message when the KB returns no passages."""
+    mock_client = MagicMock()
+    mock_client.retrieve.return_value = {"retrievalResults": []}
+    retriever = KBRetriever(client=mock_client, kb_id="kb-abc-123")
+
+    result = retriever.retrieve("CL-404", "unknown query")
+    assert "No runbook documentation found for client CL-404" in result
+
+
+def test_kb_retriever_handles_client_error():
+    """Verifies KBRetriever gracefully surfaces AWS ClientErrors as an error string."""
+    error = ClientError(
+        {"Error": {"Code": "AccessDeniedException", "Message": "KB Access Denied"}},
+        "Retrieve",
+    )
+    mock_client = MagicMock()
+    mock_client.retrieve.side_effect = error
+    retriever = KBRetriever(client=mock_client, kb_id="kb-abc-123")
+
+    result = retriever.retrieve("CL-001", "test query")
+    assert "Error retrieving KB context" in result
+    assert "AccessDeniedException" in result
+
+
+# ===========================================================================
+# 6. Tests for DynamoDB Repository Layer (src/db/dynamodb.py)
+# ===========================================================================
+
+def _mock_resource_returning(table: MagicMock) -> MagicMock:
+    """Helper: a DynamoDB resource whose .Table(name) yields the given table mock."""
+    resource = MagicMock()
+    resource.Table.return_value = table
+    return resource
+
+
+def test_ticket_repository_update_action_success():
+    """Verifies TicketRepository.update_action issues the expected DynamoDB update."""
+    mock_table = MagicMock()
+    repo = TicketRepository(resource=_mock_resource_returning(mock_table), table_name="Tickets")
+
+    result = repo.update_action("TCK-1", "Auto-resolved transient ping.", "RESOLVED")
+
+    mock_table.update_item.assert_called_once()
+    kwargs = mock_table.update_item.call_args.kwargs
+    assert kwargs["Key"] == {"ticket_id": "TCK-1"}
+    assert kwargs["ExpressionAttributeValues"][":status"] == "RESOLVED"
+    assert "Ticket TCK-1 updated successfully." in result
+
+
+def test_ticket_repository_update_action_local_fallback():
+    """Verifies update_action falls back to local logging when DynamoDB is unreachable."""
+    resource = MagicMock()
+    resource.Table.side_effect = Exception("DynamoDB connection refused")
+    repo = TicketRepository(resource=resource, table_name="Tickets")
+
+    result = repo.update_action("TCK-2", "Queued draft.", "MONITORING")
+    assert "Action logged locally (Ticket TCK-2)" in result
+    assert "MONITORING" in result
+
+
+def test_ticket_repository_get_returns_model():
+    """Verifies TicketRepository.get hydrates a Ticket model and ignores unknown columns."""
+    mock_table = MagicMock()
+    mock_table.get_item.return_value = {
+        "Item": {"ticket_id": "TCK-3", "status": "OPEN", "unmapped_column": "ignored"}
+    }
+    repo = TicketRepository(resource=_mock_resource_returning(mock_table), table_name="Tickets")
+
+    ticket = repo.get("TCK-3")
+    assert isinstance(ticket, Ticket)
+    assert ticket.ticket_id == "TCK-3"
+    assert ticket.status == "OPEN"
+
+
+def test_ticket_repository_get_missing_returns_none():
+    """Verifies TicketRepository.get returns None when the item does not exist."""
+    mock_table = MagicMock()
+    mock_table.get_item.return_value = {}
+    repo = TicketRepository(resource=_mock_resource_returning(mock_table), table_name="Tickets")
+
+    assert repo.get("TCK-MISSING") is None
+
+
+def test_ticket_repository_save_puts_item():
+    """Verifies TicketRepository.save serializes the model and calls put_item."""
+    mock_table = MagicMock()
+    repo = TicketRepository(resource=_mock_resource_returning(mock_table), table_name="Tickets")
+
+    ok = repo.save(Ticket(ticket_id="TCK-4", status="RESOLVED", client_id="CL-9"))
+    assert ok is True
+    mock_table.put_item.assert_called_once()
+    item = mock_table.put_item.call_args.kwargs["Item"]
+    assert item["ticket_id"] == "TCK-4"
+    assert item["status"] == "RESOLVED"
+    assert item["client_id"] == "CL-9"
+
+
+def test_client_repository_get_returns_model():
+    """Verifies ClientRepository.get hydrates a Client model from a DynamoDB item."""
+    mock_table = MagicMock()
+    mock_table.get_item.return_value = {
+        "Item": {
+            "client_id": "CL-001",
+            "client_name": "Pendergrass Logistics Hub",
+            "sla_tier": "Gold",
+            "site_address": "100 Logistics Way, Pendergrass GA",
+        }
+    }
+    repo = ClientRepository(resource=_mock_resource_returning(mock_table), table_name="Clients")
+
+    client = repo.get("CL-001")
+    assert isinstance(client, Client)
+    assert client.client_name == "Pendergrass Logistics Hub"
+    assert client.sla_tier == "Gold"
+    assert "Pendergrass GA" in client.site_address
+
+
+def test_ticket_model_item_roundtrip():
+    """Verifies Ticket.to_item / from_item round-trips and drops None fields."""
+    ticket = Ticket(ticket_id="TCK-9", status="QUEUED_DRAFT", client_id="CL-2")
+    item = ticket.to_item()
+    assert item["ticket_id"] == "TCK-9"
+    assert item["status"] == "QUEUED_DRAFT"
+    assert "updated_at" in item  # populated by default factory
+
+    restored = Ticket.from_item({**item, "stray_attribute": "ignored"})
+    assert restored.ticket_id == "TCK-9"
+    assert restored.client_id == "CL-2"
+
+
+def test_client_model_drops_none_values():
+    """Verifies Client.to_item excludes unset (None) values while keeping defaults."""
+    item = Client(client_id="CL-5").to_item()
+    assert item["client_id"] == "CL-5"
+    assert item["sla_window_minutes"] == 120  # int default retained
+    assert all(v is not None for v in item.values())
