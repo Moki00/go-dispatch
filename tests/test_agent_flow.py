@@ -4,13 +4,22 @@ Verifies FastAPI endpoints, payload validation, scenario configurations, and age
 with placeholder tests for future architectural features.
 """
 
+import asyncio
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
+from strands.hooks import BeforeToolCallEvent, HookRegistry
 
+from src.agent.approval import (
+    ApprovalDecision,
+    DispatchApprovalHook,
+    auto_approve,
+)
 from src.agent.core import DispatchOrchestrator
 from src.config import get_settings
 from src.main import SAMPLE_SCENARIOS, WebhookPayload, app
+from src.scheduler.sla_monitor import SLAMonitor
 
 client = TestClient(app)
 settings = get_settings()
@@ -134,19 +143,229 @@ def test_ingest_incident_api_success():
 # 4. Placeholder Tests for Future Architectural Features (Skipped)
 # ===========================================================================
 
-@pytest.mark.skip(reason="Yet to be implemented: Strands native Human-in-the-Loop approval before physical dispatch")
+# ===========================================================================
+# 4. Human-in-the-Loop Dispatch Approval Gate (Strands native hooks)
+# ===========================================================================
+
+def _make_before_tool_event(tool_name: str, tool_input: dict) -> BeforeToolCallEvent:
+    """Build a BeforeToolCallEvent as Strands would just before running a tool."""
+    return BeforeToolCallEvent(
+        agent=MagicMock(name="agent"),
+        selected_tool=MagicMock(name="selected_tool"),
+        tool_use={
+            "toolUseId": "tu-test-1",
+            "name": tool_name,
+            "input": tool_input,
+        },
+        invocation_state={},
+    )
+
+
+def _dispatch_input() -> dict:
+    return {
+        "urgency_level": "TIER_4_IMMEDIATE_DISPATCH",
+        "client_name": "Pendergrass Logistics Hub",
+        "issue_summary": "Core switch down",
+        "site_address": "500 Depot Rd",
+        "recommended_action": "Swap USW-24-PoE",
+        "sla_deadline_minutes": 30,
+    }
+
+
 def test_human_in_the_loop_approval_flow():
-    """Future verification for approval gate before physical technician dispatch."""
-    pass
+    """Physical dispatch is gated: denied by default, allowed on approval, and
+    the gate never touches non-dispatch tools — verified through the real
+    Strands hook-dispatch path."""
+    registry = HookRegistry()
+
+    # --- Denied by default: escalate_to_technician is held for approval ---
+    deny_hook = DispatchApprovalHook()  # default policy = deny_by_default
+    deny_hook.register_hooks(registry)
+
+    blocked = _make_before_tool_event("escalate_to_technician", _dispatch_input())
+    registry.invoke_callbacks(blocked)
+
+    assert isinstance(blocked.cancel_tool, str)
+    assert "APPROVAL" in blocked.cancel_tool.upper()
+    assert deny_hook.held_count == 1
+    assert deny_hook.audit_log[-1]["approved"] is False
+    assert deny_hook.audit_log[-1]["client_name"] == "Pendergrass Logistics Hub"
+
+    # --- Approved: the same call proceeds (cancel_tool stays False) ---
+    approve_registry = HookRegistry()
+    approve_hook = DispatchApprovalHook(approver=auto_approve)
+    approve_hook.register_hooks(approve_registry)
+
+    allowed = _make_before_tool_event("escalate_to_technician", _dispatch_input())
+    approve_registry.invoke_callbacks(allowed)
+
+    assert allowed.cancel_tool is False
+    assert approve_hook.held_count == 0
+    assert approve_hook.audit_log[-1]["approved"] is True
+
+    # --- Non-dispatch tools are never gated ---
+    passthrough = _make_before_tool_event(
+        "log_ticket_action", {"ticket_id": "TCK-1", "new_status": "RESOLVED"}
+    )
+    registry.invoke_callbacks(passthrough)
+    assert passthrough.cancel_tool is False
+    assert deny_hook.held_count == 1  # unchanged; no new audit entry
+
+    # --- A custom approver decision is honored ---
+    custom = DispatchApprovalHook(
+        approver=lambda req: ApprovalDecision(
+            approved=False, reason="After-hours dispatch requires manager sign-off.", approver="on_call_lead"
+        )
+    )
+    custom_registry = HookRegistry()
+    custom.register_hooks(custom_registry)
+    ev = _make_before_tool_event("escalate_to_technician", _dispatch_input())
+    custom_registry.invoke_callbacks(ev)
+    assert "manager sign-off" in ev.cancel_tool
+    assert custom.audit_log[-1]["approver"] == "on_call_lead"
 
 
-@pytest.mark.skip(reason="Yet to be implemented: Autonomous SLA countdown timer & proactive warning scheduler")
+def test_approval_hook_wired_into_orchestrator():
+    """DispatchOrchestrator installs the approval hook into the agent it builds."""
+    hook = DispatchApprovalHook()
+    with patch("src.agent.core.create_dispatch_agent", return_value=MagicMock()) as mock_create:
+        DispatchOrchestrator(approval_hook=hook)
+        mock_create.assert_called_once_with(hooks=[hook])
+
+
+# ===========================================================================
+# 5. Autonomous SLA Countdown Daemon
+# ===========================================================================
+
+class _FakeClock:
+    """Deterministic, advanceable clock for SLA countdown tests."""
+
+    def __init__(self, start: datetime) -> None:
+        self.now = start
+
+    def __call__(self) -> datetime:
+        return self.now
+
+    def advance(self, minutes: float) -> None:
+        self.now += timedelta(minutes=minutes)
+
+
 def test_autonomous_sla_tracking_daemon():
-    """Future verification for proactive countdown monitoring on active tickets."""
-    pass
+    """The monitor proactively warns a ticket once it drops below the SLA
+    threshold, warns exactly once, ignores tickets still in the safe zone, and
+    stops tracking resolved tickets."""
+    clock = _FakeClock(datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc))
+    warned_ids = []
+    monitor = SLAMonitor(
+        warn_threshold=0.25,
+        on_warning=lambda ticket, frac: warned_ids.append(ticket.ticket_id),
+        clock=clock,
+    )
+
+    # Ticket A: 60-minute window. Ticket B (control): 100-minute window.
+    monitor.register("TCK-A", "Acme Corp", sla_window_minutes=60)
+    monitor.register("TCK-B", "Globex", sla_window_minutes=100)
+
+    # t0 — both fresh, nothing warned.
+    assert monitor.check() == []
+    assert monitor.remaining_minutes("TCK-A") == pytest.approx(60.0)
+
+    # +50m — A has 10m (16.7%) left => breach threshold; B has 50m (50%) left.
+    clock.advance(50)
+    newly = monitor.check()
+    assert [t.ticket_id for t in newly] == ["TCK-A"]
+    assert warned_ids == ["TCK-A"]
+
+    # Idempotent: re-checking at the same instant does not re-warn.
+    assert monitor.check() == []
+    assert warned_ids == ["TCK-A"]
+
+    # Resolving a ticket removes it from the countdown entirely.
+    monitor.resolve("TCK-A")
+    assert "TCK-A" not in monitor.active_ticket_ids
+
+    # +45m more (t0+95m) — B now has 5m (5%) left => it finally warns.
+    clock.advance(45)
+    newly = monitor.check()
+    assert [t.ticket_id for t in newly] == ["TCK-B"]
+    assert warned_ids == ["TCK-A", "TCK-B"]
 
 
-@pytest.mark.skip(reason="Yet to be implemented: Asynchronous background event queue / PubSub ingestion in FastAPI")
+def test_sla_daemon_async_loop_fires_warning():
+    """The async run() loop performs a countdown check and fires warnings, then
+    shuts down cleanly on the stop event."""
+    clock = _FakeClock(datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc))
+    warned_ids = []
+    monitor = SLAMonitor(
+        warn_threshold=0.25,
+        on_warning=lambda ticket, frac: warned_ids.append(ticket.ticket_id),
+        clock=clock,
+    )
+    # Already past the threshold at registration (2m of a 60m window remaining).
+    monitor.register(
+        "TCK-URGENT",
+        "Metro Health",
+        sla_window_minutes=60,
+        started_at=clock.now - timedelta(minutes=58),
+    )
+
+    async def _drive():
+        stop = asyncio.Event()
+        task = asyncio.create_task(monitor.run(interval_seconds=0.01, stop_event=stop))
+        # run() checks immediately on entry, before its first await.
+        await asyncio.sleep(0.05)
+        stop.set()
+        await asyncio.wait_for(task, timeout=1.0)
+
+    asyncio.run(_drive())
+    assert warned_ids == ["TCK-URGENT"]
+
+
+# ===========================================================================
+# 6. Asynchronous Background Webhook Ingestion
+# ===========================================================================
+
 def test_async_background_webhook_ingestion():
-    """Future verification for async non-blocking webhook ingestion."""
-    pass
+    """POST /api/v1/incidents/async acknowledges immediately (202) and processes
+    the incident off the request path, with the result observable via the ledger."""
+    import src.main as main_module
+
+    mock_orchestrator = MagicMock()
+    mock_orchestrator.process_incident.return_value = "Outage verified. Critical dispatch sent."
+
+    main_module.ingestion_status.clear()
+
+    with patch("src.main.orchestrator", mock_orchestrator):
+        payload = {
+            "ticket_id": "TCK-ASYNC-1",
+            "client_id": "CL-777",
+            "client_name": "Nightshift Logistics",
+            "alert_text": "Core gateway unresponsive",
+            "sla_window_minutes": 30,
+            "source": "monitoring_webhook",
+        }
+        response = client.post("/api/v1/incidents/async", json=payload)
+
+        # Immediate, non-blocking acknowledgement.
+        assert response.status_code == 202
+        data = response.json()
+        assert data["status"] == "accepted"
+        assert data["ticket_id"] == "TCK-ASYNC-1"
+
+        # TestClient drains BackgroundTasks as part of the response cycle, so the
+        # agent loop has now run exactly once — off the request handler.
+        mock_orchestrator.process_incident.assert_called_once()
+        assert mock_orchestrator.process_incident.call_args[0][0]["ticket_id"] == "TCK-ASYNC-1"
+
+        # The ledger reflects the completed background processing.
+        status_resp = client.get("/api/v1/incidents/TCK-ASYNC-1/status")
+        assert status_resp.status_code == 200
+        record = status_resp.json()
+        assert record["status"] == "PROCESSED"
+        assert "Outage verified" in record["agent_output"]
+
+
+def test_async_ingestion_status_unknown_ticket_404():
+    """Polling an unknown ticket returns 404."""
+    response = client.get("/api/v1/incidents/DOES-NOT-EXIST/status")
+    assert response.status_code == 404

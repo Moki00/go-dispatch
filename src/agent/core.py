@@ -5,9 +5,10 @@ and Bedrock execution loop.
 """
 
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 from strands import Agent
+from strands.hooks import HookProvider
 from strands.models import BedrockModel
 
 from src.agent.tools import (
@@ -47,8 +48,13 @@ Operate decisively. Provide compact, structured reasoning steps before tool invo
 """
 
 
-def create_dispatch_agent() -> Agent:
-    """Initializes and returns the Strands Agent configured with Amazon Bedrock and Go-Dispatch tools."""
+def create_dispatch_agent(hooks: Optional[List[HookProvider]] = None) -> Agent:
+    """Initializes and returns the Strands Agent configured with Amazon Bedrock and Go-Dispatch tools.
+
+    ``hooks`` accepts native Strands ``HookProvider`` instances — e.g. a
+    :class:`~src.agent.approval.DispatchApprovalHook` to gate physical dispatch
+    behind human approval. When omitted, the agent runs fully autonomously.
+    """
     logger.info(
         f"Initializing Strands Agent with Bedrock model: {settings.bedrock_model_id} (Region: {settings.aws_region})"
     )
@@ -67,18 +73,25 @@ def create_dispatch_agent() -> Agent:
         escalate_to_technician,
     ]
 
-    return Agent(
-        model=llm_backend,
-        system_prompt=SYSTEM_PROMPT,
-        tools=agent_tools,
-    )
+    agent_kwargs: Dict[str, Any] = {
+        "model": llm_backend,
+        "system_prompt": SYSTEM_PROMPT,
+        "tools": agent_tools,
+    }
+    if hooks:
+        agent_kwargs["hooks"] = hooks
+
+    return Agent(**agent_kwargs)
 
 
 class DispatchOrchestrator:
     """Manages event ingestion and passes structured operational telemetry into the Strands agent loop."""
 
-    def __init__(self):
-        self.agent = create_dispatch_agent()
+    def __init__(self, approval_hook: Optional[HookProvider] = None):
+        # An optional approval hook installs the Human-in-the-Loop gate in front
+        # of physical dispatch. Left as None, the agent operates autonomously.
+        hooks = [approval_hook] if approval_hook is not None else None
+        self.agent = create_dispatch_agent(hooks=hooks)
 
     def process_incident(self, incident_payload: Dict[str, Any]) -> str:
         """Runs the autonomous triage loop for an incoming ticket, alert, or webhook."""

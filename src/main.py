@@ -4,6 +4,7 @@ Provides FastAPI endpoints for inbound alert webhooks and an interactive CLI tes
 """
 
 import argparse
+import asyncio
 from contextlib import asynccontextmanager
 import json
 import logging
@@ -19,6 +20,7 @@ import uvicorn
 
 from src.agent.core import DispatchOrchestrator
 from src.config import get_settings
+from src.scheduler.sla_monitor import SLAMonitor, TrackedTicket
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,16 +31,56 @@ logger = logging.getLogger("go_dispatch.main")
 settings = get_settings()
 console = Console()
 
+# Global service singletons, initialized by the FastAPI lifespan.
 orchestrator: Optional[DispatchOrchestrator] = None
+sla_monitor: Optional[SLAMonitor] = None
+_sla_stop_event: Optional[asyncio.Event] = None
+_sla_task: Optional["asyncio.Task[None]"] = None
+
+# In-memory ledger tracking the state of asynchronously ingested incidents so the
+# non-blocking webhook path stays observable (QUEUED -> PROCESSING -> PROCESSED/FAILED).
+ingestion_status: Dict[str, Dict[str, Any]] = {}
+
+
+def _log_sla_warning(ticket: TrackedTicket, fraction: float) -> None:
+    """Default SLA countdown reaction: log a Tier-3 warning for the operator."""
+    logger.warning(
+        f"[SLA COUNTDOWN] Ticket {ticket.ticket_id} ({ticket.client_name}) crossed the "
+        f"SLA warning threshold — {fraction * 100:.0f}% of window remaining; "
+        f"deadline {ticket.deadline().isoformat()}. Tier-3 escalation recommended."
+    )
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global orchestrator
+    global orchestrator, sla_monitor, _sla_stop_event, _sla_task
     logger.info("Starting up Go-Dispatch service...")
     orchestrator = DispatchOrchestrator()
+
+    # Launch the autonomous SLA countdown daemon.
+    sla_monitor = SLAMonitor(
+        warn_threshold=settings.sla_warn_threshold,
+        on_warning=_log_sla_warning,
+    )
+    _sla_stop_event = asyncio.Event()
+    _sla_task = asyncio.create_task(
+        sla_monitor.run(
+            interval_seconds=settings.sla_poll_interval_seconds,
+            stop_event=_sla_stop_event,
+        )
+    )
+    logger.info("Autonomous SLA countdown daemon started.")
+
     yield
+
     logger.info("Shutting down Go-Dispatch service...")
+    if _sla_stop_event is not None:
+        _sla_stop_event.set()
+    if _sla_task is not None:
+        try:
+            await asyncio.wait_for(_sla_task, timeout=5.0)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            _sla_task.cancel()
 
 
 app = FastAPI(
@@ -67,6 +109,12 @@ class TriageResponse(BaseModel):
     agent_output: str
 
 
+class IngestionAck(BaseModel):
+    status: str
+    ticket_id: str
+    detail: str
+
+
 @app.get("/health", status_code=status.HTTP_200_OK)
 def health_check():
     return {"status": "healthy", "service": "go-dispatch", "region": settings.aws_region}
@@ -74,6 +122,7 @@ def health_check():
 
 @app.post("/api/v1/incidents", response_model=TriageResponse, status_code=status.HTTP_200_OK)
 def ingest_incident(payload: WebhookPayload):
+    """Synchronous triage: blocks until the agent loop completes and returns its output."""
     if not orchestrator:
         raise HTTPException(status_code=503, detail="Dispatch orchestrator is initializing.")
 
@@ -83,6 +132,79 @@ def ingest_incident(payload: WebhookPayload):
         ticket_id=payload.ticket_id,
         agent_output=result,
     )
+
+
+def _process_incident_task(payload: Dict[str, Any]) -> None:
+    """Background worker: runs the agent triage loop off the HTTP request path.
+
+    Updates :data:`ingestion_status` as the incident moves through the queue so
+    the async result can be polled, and releases the ticket from the SLA
+    countdown once it has been handled.
+    """
+    ticket_id = payload.get("ticket_id", "TEMP-000")
+    ingestion_status[ticket_id] = {"status": "PROCESSING", "ticket_id": ticket_id, "agent_output": None}
+    try:
+        if orchestrator is None:
+            raise RuntimeError("Dispatch orchestrator is not initialized.")
+        result = orchestrator.process_incident(payload)
+        ingestion_status[ticket_id] = {
+            "status": "PROCESSED",
+            "ticket_id": ticket_id,
+            "agent_output": str(result),
+        }
+    except Exception as exc:  # noqa: BLE001 - surface failure in the ledger, never crash the worker
+        logger.error(f"Background triage failed for {ticket_id}: {exc}")
+        ingestion_status[ticket_id] = {
+            "status": "FAILED",
+            "ticket_id": ticket_id,
+            "agent_output": str(exc),
+        }
+    finally:
+        if sla_monitor is not None:
+            sla_monitor.resolve(ticket_id)
+
+
+@app.post(
+    "/api/v1/incidents/async",
+    response_model=IngestionAck,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def ingest_incident_async(payload: WebhookPayload, background_tasks: BackgroundTasks):
+    """Non-blocking triage: acknowledges immediately (202) and processes in the background.
+
+    The incident is registered with the autonomous SLA countdown daemon and
+    handed to a background worker, so high-volume monitoring webhooks never block
+    on the agent's reasoning loop.
+    """
+    if not orchestrator:
+        raise HTTPException(status_code=503, detail="Dispatch orchestrator is initializing.")
+
+    ticket_id = payload.ticket_id
+    if sla_monitor is not None:
+        sla_monitor.register(
+            ticket_id,
+            payload.client_name,
+            payload.sla_window_minutes,
+            issue_summary=payload.alert_text,
+        )
+
+    ingestion_status[ticket_id] = {"status": "QUEUED", "ticket_id": ticket_id, "agent_output": None}
+    background_tasks.add_task(_process_incident_task, payload.model_dump())
+
+    return IngestionAck(
+        status="accepted",
+        ticket_id=ticket_id,
+        detail="Incident queued for background triage.",
+    )
+
+
+@app.get("/api/v1/incidents/{ticket_id}/status", status_code=status.HTTP_200_OK)
+def get_incident_status(ticket_id: str):
+    """Poll the state of an asynchronously ingested incident."""
+    record = ingestion_status.get(ticket_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"No ingestion record for ticket {ticket_id}.")
+    return record
 
 
 # ---------------------------------------------------------------------------
