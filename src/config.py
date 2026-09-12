@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     app_port: int = 8000
     debug: bool = False
 
+    # Autonomous SLA countdown daemon
+    sla_warn_threshold: float = 0.25  # warn when <=25% of the contract window remains
+    sla_poll_interval_seconds: int = 30
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
 
