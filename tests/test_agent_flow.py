@@ -17,7 +17,7 @@ from src.agent.approval import (
     auto_approve,
 )
 from src.agent.core import DispatchOrchestrator
-from src.config import get_settings
+from src.config import Settings, get_settings
 from src.main import SAMPLE_SCENARIOS, WebhookPayload, app
 from src.scheduler.sla_monitor import SLAMonitor
 
@@ -30,11 +30,13 @@ settings = get_settings()
 # ===========================================================================
 
 def test_settings_load_defaults():
-    """Verifies that project settings load appropriate default AWS and model values."""
-    assert settings.aws_region == "us-east-1"
-    assert "claude-3-5-sonnet" in settings.bedrock_model_id
-    assert settings.dynamodb_tickets_table == "GoDispatch_Tickets"
-    assert settings.app_port == 8000
+    """Verifies the Settings class ships correct defaults, independent of any
+    local ``.env`` override (which a live deployment supplies)."""
+    defaults = Settings(_env_file=None)
+    assert defaults.aws_region == "us-east-1"
+    assert "claude-3-5-sonnet" in defaults.bedrock_model_id
+    assert defaults.dynamodb_tickets_table == "GoDispatch_Tickets"
+    assert defaults.app_port == 8000
 
 
 # ===========================================================================

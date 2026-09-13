@@ -239,6 +239,10 @@ def escalate_to_technician(
         f"Action: {recommended_action}\n"
     )
 
+    # Deliver via SNS when configured, and report *truthfully* whether a page
+    # actually went out. In offline/degraded mode (no topic ARN) we still build
+    # the field dossier, but we must never tell the agent a technician was paged
+    # when none was — that would fabricate a dispatch in the audit trail.
     if settings.sns_dispatch_topic_arn:
         try:
             sns_client.publish(
@@ -247,10 +251,27 @@ def escalate_to_technician(
                 Message=message_body,
             )
             logger.info(f"SNS Dispatch Alert successfully sent to topic: {settings.sns_dispatch_topic_arn}")
+            headline = "CRITICAL ALERT DISPATCHED TO TECHNICIAN"
+            delivery = "Paged via Amazon SNS push notification/SMS."
         except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "ClientError")
             logger.error(f"Failed to publish SNS alert: {e}")
+            headline = "DISPATCH PREPARED - SNS DELIVERY FAILED"
+            delivery = (
+                f"SNS publish failed ({code}); technician was NOT paged. "
+                "Escalate manually or retry once SNS is reachable."
+            )
+    else:
+        headline = "DISPATCH DOSSIER PREPARED - NO PAGE SENT"
+        delivery = (
+            "No SNS topic configured (SNS_DISPATCH_TOPIC_ARN unset); technician was "
+            "NOT paged. Dossier is ready for manual mobilization."
+        )
+
+    dispatch_payload["DELIVERY_STATUS"] = delivery
 
     return (
-        f"CRITICAL ALERT DISPATCHED TO TECHNICIAN.\n"
+        f"{headline}.\n"
+        f"Delivery: {delivery}\n"
         f"Dossier Payload:\n{json.dumps(dispatch_payload, indent=2)}"
     )

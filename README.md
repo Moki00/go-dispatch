@@ -19,7 +19,7 @@
 ┌────────┴──────────────────────────┐
 ▼                                   ▼
 [Strands Agent Loop] ◄──► [Bedrock Knowledge Bases]
-(Claude 3.5 Sonnet) (Client Runbooks & Topology)
+(Claude 4.5 Sonnet) (Client Runbooks & Topology)
 │
 ├── Tier 1: Auto-resolve & verify (Silent)
 ├── Tier 2: Async draft & queue (Silent)
@@ -43,7 +43,7 @@
 ## 🛠️ Tech Stack
 
 - **Agent Framework:** [Strands Agents SDK](https://github.com/aws/strands-agents)
-- **Foundational LLM:** Amazon Bedrock (Anthropic Claude 3.5 Sonnet / Haiku)
+- **Foundational LLM:** Amazon Bedrock (Anthropic Claude 4.5 Sonnet)
 - **Deployment Runtime:** Amazon Bedrock AgentCore
 - **Knowledge Base & Vector Store:** Amazon Bedrock Knowledge Bases + Amazon DynamoDB
 - **Notifications & Alerting:** Amazon SNS
@@ -55,7 +55,7 @@
 
 ### Prerequisites
 - Python 3.11+
-- AWS Account with Bedrock model access enabled (Claude 3.5 Sonnet)
+- AWS Account with Bedrock model access enabled (Claude Sonnet 4.5, via a cross-region inference profile)
 - AWS CLI configured locally (`aws configure`)
 
 ### Installation
@@ -89,12 +89,30 @@ cp .env.example .env
 
 ```
 
-Populate your `.env` with your AWS region, Bedrock Knowledge Base IDs, and notification endpoints. 5. **Run the agent locally:**
+Populate your `.env` with your AWS region, Bedrock Knowledge Base IDs, and notification endpoints. 
+
+5. **Run the interactive demo (CLI):**
+
+> On Windows, set `PYTHONIOENCODING=utf-8` first, so the Rich panels and emoji render instead of crashing on cp1252.
 
 ```bash
-python -m src.main
+# Windows PowerShell
+$env:PYTHONIOENCODING = "utf-8"
 
+# Autonomous 4-tier triage harness (agent runs hands-off)
+python -m src.main --cli
+
+# Same harness, but pause for human approval before any physical dispatch (Tier 3/4)
+python -m src.main --cli --hitl
 ```
+
+6. **Or run the API server:**
+
+```bash
+python -m src.main            # FastAPI on http://localhost:8000  (Swagger UI at /docs)
+```
+
+See **[DEMO.md](DEMO.md)** for a full presenter runbook and pitch script.
 
 ---
 
@@ -107,23 +125,34 @@ go-dispatch/
 ├── src/
 │   ├── __init__.py
 │   ├── config.py             # Pydantic settings & AWS environment loading
-│   ├── main.py               # FastAPI webhook listener & CLI entrypoint
+│   ├── main.py               # FastAPI webhook listener & CLI demo harness (--cli / --hitl)
 │   ├── agent/
 │   │   ├── __init__.py
 │   │   ├── core.py           # Strands Agent initialization & system prompts
+│   │   ├── approval.py       # Human-in-the-Loop dispatch approval hook (Strands BeforeToolCall)
 │   │   └── tools.py          # Strands @tool definitions (diagnostics, KB, SNS dispatch)
 │   ├── db/
 │   │   ├── __init__.py
 │   │   └── dynamodb.py       # Ticket state tracking & client SLA metadata
+│   ├── scheduler/
+│   │   ├── __init__.py
+│   │   └── sla_monitor.py    # Autonomous SLA countdown daemon
 │   └── knowledge/
 │       ├── __init__.py
 │       └── kb_retriever.py   # Amazon Bedrock Knowledge Bases integration
+├── scripts/
+│   ├── aws_probe.py          # Read-only check of AWS creds / tables / topic
+│   └── provision_aws.py      # Idempotent DynamoDB + SNS provisioning
+├── infra/
+│   ├── iam-policy-go-dispatch.json   # Least-privilege IAM policy for DynamoDB + SNS
+│   └── README.md             # Real persistence & paging setup steps
 ├── tests/
 │   ├── __init__.py
 │   ├── test_tools.py
 │   └── test_agent_flow.py
 ├── .env.example
 ├── .gitignore
+├── DEMO.md                   # Presenter runbook & pitch script
 ├── LICENSE
 ├── README.md
 └── requirements.txt

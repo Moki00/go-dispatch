@@ -17,7 +17,12 @@ class Settings(BaseSettings):
     sla_warn_threshold: float = 0.25  # warn when <=25% of the contract window remains
     sla_poll_interval_seconds: int = 30
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    # ``extra="ignore"`` lets the app coexist with unrelated environment
+    # variables (e.g. standard AWS_* vars, or forward-looking keys like
+    # DISPATCH_PHONE_NUMBER) without crashing on startup.
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
 
 @lru_cache()
