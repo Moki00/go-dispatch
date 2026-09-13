@@ -4,27 +4,30 @@
 
 > Built for the **AWS Agents for Humans Hackathon** (Track: Professional Agents)
 
-**Go-Dispatch** is an autonomous operational IT agent built with the **Strands Agents SDK** and deployed via **Amazon Bedrock AgentCore**. It runs silently in the background—auto-resolving transient network alarms, drafting context-rich customer replies from runbooks, and proactively monitoring SLA deadlines. It cuts through noise to mobilize the field technician _only_ when physical dispatch or high-stakes authorization is required.
+**Go-Dispatch** is an autonomous operational IT agent built with the **Strands Agents SDK** and powered by **Amazon Bedrock** (Anthropic Claude Sonnet 4.5). It runs silently in the background—auto-resolving transient network alarms, drafting context-rich customer replies from runbooks, and proactively monitoring SLA deadlines. It cuts through noise to mobilize the field technician _only_ when physical dispatch or high-stakes authorization is required.
 
 ---
 
 ## 🏗️ Architecture
 ```
 
-[Inbound Webhook / Ticket / Ping / SMS]
+[Inbound Webhook / Ticket / Ping / Alert]
          │
          ▼
-[Amazon Bedrock AgentCore]
+[FastAPI Service  ·  Interactive CLI Harness]
          │
-┌────────┴──────────────────────────┐
-▼                                   ▼
-[Strands Agent Loop] ◄──► [Bedrock Knowledge Bases]
-(Claude 4.5 Sonnet) (Client Runbooks & Topology)
-│
-├── Tier 1: Auto-resolve & verify (Silent)
-├── Tier 2: Async draft & queue (Silent)
-├── Tier 3: SLA warning alert (Push)
-└── Tier 4: Hardware / Site Outage (Immediate Dispatch via SNS)
+         ▼
+[Strands Agent Loop] ◄──► [Amazon Bedrock Runtime — Claude Sonnet 4.5]
+         │
+         ├──► [Bedrock Knowledge Bases]  — client runbooks & topology  (mock fallback)
+         ├──► [ICMP Ping Diagnostic]      — real packet-loss / latency
+         ├──► [Amazon DynamoDB]           — ticket state & SLA metadata (local fallback)
+         └──► [Human-in-the-Loop Gate] ──► [Amazon SNS] technician page (dossier fallback)
+
+   Tier 1: Auto-resolve & verify        (Silent)
+   Tier 2: Async draft & queue          (Silent)
+   Tier 3: SLA-breach escalation        (Human approval)
+   Tier 4: Site outage → HITL approval → SNS dispatch
 
 ````
 
@@ -43,11 +46,11 @@
 ## 🛠️ Tech Stack
 
 - **Agent Framework:** [Strands Agents SDK](https://github.com/aws/strands-agents)
-- **Foundational LLM:** Amazon Bedrock (Anthropic Claude 4.5 Sonnet)
-- **Deployment Runtime:** Amazon Bedrock AgentCore
-- **Knowledge Base & Vector Store:** Amazon Bedrock Knowledge Bases + Amazon DynamoDB
-- **Notifications & Alerting:** Amazon SNS
-- **Backend Service:** Python 3.11+, FastAPI, Boto3
+- **Foundational LLM:** Amazon Bedrock — Anthropic Claude Sonnet 4.5 (cross-region inference profile)
+- **Agent Runtime:** Amazon Bedrock Runtime (Converse API) via Strands, wrapped in a FastAPI service + interactive CLI *(deployment target: Amazon Bedrock AgentCore)*
+- **Knowledge & State:** Amazon Bedrock Knowledge Bases + Amazon DynamoDB *(graceful mock / local fallback when unprovisioned)*
+- **Notifications & Alerting:** Amazon SNS *(graceful dossier fallback when unprovisioned)*
+- **Backend Service:** Python 3.13, FastAPI, Boto3, Rich, Pydantic
 
 ---
 
