@@ -1,0 +1,51 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "GoDispatchDynamoDBTables",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:CreateTable",
+        "dynamodb:DescribeTable",
+        "dynamodb:UpdateItem",
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:Query",
+        "dynamodb:Scan",
+        "dynamodb:BatchWriteItem"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:eu-north-1:419550857610:table/GoDispatch_Tickets",
+        "arn:aws:dynamodb:eu-north-1:419550857610:table/GoDispatch_Tickets/index/*",
+        "arn:aws:dynamodb:eu-north-1:419550857610:table/GoDispatch_Clients",
+        "arn:aws:dynamodb:eu-north-1:419550857610:table/GoDispatch_Clients/index/*"
+      ]
+    },
+    {
+      "Sid": "GoDispatchListTables",
+      "Effect": "Allow",
+      "Action": "dynamodb:ListTables",
+      "Resource": "*"
+    },
+    {
+      "Sid": "GoDispatchSNSTopic",
+      "Effect": "Allow",
+      "Action": [
+        "sns:CreateTopic",
+        "sns:Publish",
+        "sns:Subscribe",
+        "sns:GetTopicAttributes",
+        "sns:SetTopicAttributes",
+        "sns:DeleteTopic"
+      ],
+      "Resource": "arn:aws:sns:eu-north-1:419550857610:GoDispatch_Alerts"
+    },
+    {
+      "Sid": "GoDispatchListTopics",
+      "Effect": "Allow",
+      "Action": "sns:ListTopics",
+      "Resource": "*"
+    }
+  ]
+}

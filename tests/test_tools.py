@@ -158,17 +158,21 @@ def test_log_ticket_action_dynamodb_success():
 # ===========================================================================
 
 def test_escalate_to_technician_payload_structure():
-    """Verifies that escalate_to_technician returns a properly structured dispatch dossier."""
-    result = escalate_to_technician(
-        urgency_level="TIER_4_IMMEDIATE_DISPATCH",
-        client_name="Pendergrass Logistics Hub",
-        issue_summary="Core switch hardware failure.",
-        site_address="100 Logistics Way, Pendergrass GA",
-        recommended_action="Replace USW-24-PoE with closet spare.",
-        sla_deadline_minutes=25,
-    )
+    """Verifies escalate_to_technician builds a full dispatch dossier and, with no
+    SNS topic configured, reports truthfully that no technician was paged."""
+    with patch("src.agent.tools.settings.sns_dispatch_topic_arn", ""):
+        result = escalate_to_technician(
+            urgency_level="TIER_4_IMMEDIATE_DISPATCH",
+            client_name="Pendergrass Logistics Hub",
+            issue_summary="Core switch hardware failure.",
+            site_address="100 Logistics Way, Pendergrass GA",
+            recommended_action="Replace USW-24-PoE with closet spare.",
+            sla_deadline_minutes=25,
+        )
 
-    assert "CRITICAL ALERT DISPATCHED TO TECHNICIAN" in result
+    # Degraded mode must never claim a dispatch occurred.
+    assert "NO PAGE SENT" in result
+    assert "NOT paged" in result
     assert "TIER_4_IMMEDIATE_DISPATCH" in result
     assert "Pendergrass Logistics Hub" in result
     assert "100 Logistics Way" in result
@@ -179,7 +183,7 @@ def test_escalate_to_technician_publishes_to_sns():
     """Verifies that escalate_to_technician triggers Amazon SNS publish when topic ARN is set."""
     with patch("src.agent.tools.settings.sns_dispatch_topic_arn", "arn:aws:sns:us-east-1:123456789012:CriticalAlerts"):
         with patch("src.agent.tools.sns_client.publish") as mock_sns_publish:
-            escalate_to_technician(
+            result = escalate_to_technician(
                 urgency_level="TIER_3_SLA_WARNING",
                 client_name="Apex Healthcare",
                 issue_summary="Impending SLA breach in 12 minutes.",
@@ -192,6 +196,9 @@ def test_escalate_to_technician_publishes_to_sns():
             assert call_kwargs["TopicArn"] == "arn:aws:sns:us-east-1:123456789012:CriticalAlerts"
             assert "Apex Healthcare" in call_kwargs["Subject"]
             assert "12 min(s)" in call_kwargs["Message"]
+            # When the page actually goes out, the tool says so explicitly.
+            assert "DISPATCHED TO TECHNICIAN" in result
+            assert "Paged via Amazon SNS" in result
 
 
 # ===========================================================================

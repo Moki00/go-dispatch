@@ -18,6 +18,7 @@ from rich.panel import Panel
 from rich.table import Table
 import uvicorn
 
+from src.agent.approval import ApprovalDecision, ApprovalRequest, DispatchApprovalHook
 from src.agent.core import DispatchOrchestrator
 from src.config import get_settings
 from src.scheduler.sla_monitor import SLAMonitor, TrackedTicket
@@ -218,7 +219,7 @@ SAMPLE_SCENARIOS = {
             "ticket_id": "TCK-1001",
             "client_id": "CL-042",
             "client_name": "Apex Distribution Center",
-            "alert_text": "WARN: Single ICMP ping dropped on secondary guest Wi-Fi VLAN 20.",
+            "alert_text": "WARN: Single ICMP probe missed on management loopback 127.0.0.1 (secondary guest Wi-Fi VLAN 20). Likely a transient flap - verify reachability and auto-resolve if self-healed.",
             "sla_window_minutes": 240,
             "source": "snmp_trap",
         },
@@ -240,7 +241,7 @@ SAMPLE_SCENARIOS = {
             "ticket_id": "TCK-1003",
             "client_id": "CL-104",
             "client_name": "Jackson Medical Clinic",
-            "alert_text": "SLA Warning: Unanswered ticket on billing sync timeout. Contract SLA expires in 15 minutes.",
+            "alert_text": "SLA Warning: Billing-sync integration host 127.0.0.1 is reachable, but the customer ticket has gone unworked. Contract SLA expires in 15 minutes.",
             "sla_window_minutes": 15,
             "source": "sla_monitor",
         },
@@ -251,7 +252,7 @@ SAMPLE_SCENARIOS = {
             "ticket_id": "TCK-1004",
             "client_id": "CL-001",
             "client_name": "Pendergrass Logistics Hub",
-            "alert_text": "EMERGENCY: Core UniFi Switch USW-24-PoE unreachable. All warehouse POS and VOIP endpoints down.",
+            "alert_text": "EMERGENCY: Core UniFi Switch USW-24-PoE at edge uplink 192.0.2.1 is unreachable (100% packet loss). All warehouse POS and VOIP endpoints down.",
             "sla_window_minutes": 30,
             "source": "network_sentinel",
         },
@@ -259,16 +260,51 @@ SAMPLE_SCENARIOS = {
 }
 
 
-def run_cli_simulation():
+def cli_approver(request: ApprovalRequest) -> ApprovalDecision:
+    """Interactive Human-in-the-Loop gate: pause and ask a human operator to
+    approve or deny a physical technician dispatch before it is sent."""
+    inp = request.tool_input
+    console.print(
+        Panel(
+            f"[bold]Urgency:[/bold] {inp.get('urgency_level', 'N/A')}\n"
+            f"[bold]Client:[/bold] {inp.get('client_name', 'N/A')}\n"
+            f"[bold]Site:[/bold] {inp.get('site_address', 'N/A')}\n"
+            f"[bold]Issue:[/bold] {inp.get('issue_summary', 'N/A')}\n"
+            f"[bold]Recommended action:[/bold] {inp.get('recommended_action', 'N/A')}\n"
+            f"[bold]SLA remaining:[/bold] {inp.get('sla_deadline_minutes', 'N/A')} min",
+            title="[bold yellow]DISPATCH APPROVAL REQUIRED[/bold yellow]",
+            border_style="yellow",
+        )
+    )
+    try:
+        answer = input("Approve physical dispatch to a technician? [y/N]: ").strip().lower()
+    except EOFError:
+        answer = ""
+    if answer in ("y", "yes"):
+        console.print("[green]Dispatch APPROVED by operator.[/green]")
+        return ApprovalDecision(
+            approved=True, reason="Approved by CLI operator.", approver="cli_operator"
+        )
+    console.print("[red]Dispatch DENIED - holding for human sign-off.[/red]")
+    return ApprovalDecision(
+        approved=False,
+        reason="Operator declined dispatch at the CLI approval gate.",
+        approver="cli_operator",
+    )
+
+
+def run_cli_simulation(hitl: bool = False):
     console.print(
         Panel.fit(
             "[bold green]Go-Dispatch[/bold green] - Autonomous Zero-Distraction Triage\n"
-            "[italic]Built with Strands Agents SDK & Amazon Bedrock[/italic]",
+            "[italic]Built with Strands Agents SDK & Amazon Bedrock[/italic]"
+            + ("\n[bold yellow]Human-in-the-Loop dispatch approval: ENABLED[/bold yellow]" if hitl else ""),
             border_style="green",
         )
     )
 
-    runner_orchestrator = DispatchOrchestrator()
+    approval_hook = DispatchApprovalHook(approver=cli_approver) if hitl else None
+    runner_orchestrator = DispatchOrchestrator(approval_hook=approval_hook)
 
     while True:
         table = Table(title="Select a Test Incident Scenario", show_header=True)
@@ -300,8 +336,14 @@ def run_cli_simulation():
             )
         )
 
-        with console.status("[bold green]Go-Dispatch Agent reasoning and executing tools...[/bold green]"):
+        if hitl:
+            # Interactive approval prompts must stay visible, so skip the live
+            # spinner (it would repaint over the operator prompt).
+            console.print("[bold green]Go-Dispatch Agent reasoning and executing tools...[/bold green]")
             response = runner_orchestrator.process_incident(selected["payload"])
+        else:
+            with console.status("[bold green]Go-Dispatch Agent reasoning and executing tools...[/bold green]"):
+                response = runner_orchestrator.process_incident(selected["payload"])
 
         console.print(
             Panel(
@@ -320,10 +362,15 @@ if __name__ == "__main__":
         action="store_true",
         help="Run the interactive CLI simulation harness instead of starting the FastAPI server.",
     )
+    parser.add_argument(
+        "--hitl",
+        action="store_true",
+        help="Require interactive human approval before any physical dispatch (Tier 3/4).",
+    )
     args = parser.parse_args()
 
     if args.cli:
-        run_cli_simulation()
+        run_cli_simulation(hitl=args.hitl)
     else:
         console.print(f"[bold green]Starting Go-Dispatch FastAPI Server on {settings.app_host}:{settings.app_port}...[/bold green]")
         uvicorn.run(
