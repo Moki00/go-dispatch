@@ -9,7 +9,10 @@
 ---
 
 ## 🏗️ Architecture
-```
+
+![Go-Dispatch Architecture](docs/architecture_diagram.png)
+
+```text
 
 [Inbound Webhook / Ticket / Ping / Alert]
          │
@@ -29,7 +32,7 @@
    Tier 3: SLA-breach escalation        (Human approval)
    Tier 4: Site outage → HITL approval → SNS dispatch
 
-````
+```
 
 ---
 
@@ -47,9 +50,9 @@
 
 - **Agent Framework:** [Strands Agents SDK](https://github.com/aws/strands-agents)
 - **Foundational LLM:** Amazon Bedrock — Anthropic Claude Sonnet 4.5 (cross-region inference profile)
-- **Agent Runtime:** Amazon Bedrock Runtime (Converse API) via Strands, wrapped in a FastAPI service + interactive CLI *(deployment target: Amazon Bedrock AgentCore)*
-- **Knowledge & State:** Amazon Bedrock Knowledge Bases + Amazon DynamoDB *(graceful mock / local fallback when unprovisioned)*
-- **Notifications & Alerting:** Amazon SNS *(graceful dossier fallback when unprovisioned)*
+- **Agent Runtime:** Amazon Bedrock Runtime (Converse API) via Strands, wrapped in a FastAPI service + interactive CLI _(deployment target: Amazon Bedrock AgentCore)_
+- **Knowledge & State:** Amazon Bedrock Knowledge Bases + Amazon DynamoDB _(graceful mock / local fallback when unprovisioned)_
+- **Notifications & Alerting:** Amazon SNS _(graceful dossier fallback when unprovisioned)_
 - **Backend Service:** Python 3.13, FastAPI, Boto3, Rich, Pydantic
 
 ---
@@ -57,6 +60,7 @@
 ## 🚀 Getting Started
 
 ### Prerequisites
+
 - Python 3.11+
 - AWS Account with Bedrock model access enabled (Claude Sonnet 4.5, via a cross-region inference profile)
 - AWS CLI configured locally (`aws configure`)
@@ -64,6 +68,7 @@
 ### Installation
 
 1. **Clone the repository:**
+
 ```bash
 git clone [https://github.com/Moki00/go-dispatch.git](https://github.com/Moki00/go-dispatch.git)
 cd go-dispatch
@@ -92,7 +97,7 @@ cp .env.example .env
 
 ```
 
-Populate your `.env` with your AWS region, Bedrock Knowledge Base IDs, and notification endpoints. 
+Populate your `.env` with your AWS region, Bedrock Knowledge Base IDs, and notification endpoints.
 
 5. **Run the interactive demo (CLI):**
 
