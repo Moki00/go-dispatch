@@ -120,8 +120,6 @@ python -m src.main --cli --hitl
 python -m src.main            # FastAPI on http://localhost:8000  (Swagger UI at /docs)
 ```
 
-See **[DEMO.md](DEMO.md)** for a full presenter runbook and pitch script.
-
 ---
 
 ## 📂 Project Structure
@@ -160,7 +158,6 @@ go-dispatch/
 │   └── test_agent_flow.py
 ├── .env.example
 ├── .gitignore
-├── DEMO.md                   # Presenter runbook & pitch script
 ├── LICENSE
 ├── README.md
 └── requirements.txt
